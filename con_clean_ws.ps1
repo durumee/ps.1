@@ -15,6 +15,7 @@ $logFilePath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path "web
 $cdataPattern = '(?s)<!\[CDATA\[(.*?)\]\]>'
 $cdataRegex = [System.Text.RegularExpressions.Regex]::new($cdataPattern)
 
+# 이미 주석 처리되었거나 변형된 구문(c_o_n_s_o_l_e)은 제외하고 실제 동작하는 console 구문만 매칭
 $consolePattern = '(?<!\/\*.*)console\.(log|error|warn|info|debug|trace)\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)\s*;?'
 $consoleRegex = [System.Text.RegularExpressions.Regex]::new($consolePattern)
 
@@ -43,7 +44,7 @@ Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-O
     $fullFilePath = [System.IO.Path]::GetFullPath($_.FullName)
     $originalXml = [System.IO.File]::ReadAllText($fullFilePath, [System.Text.Encoding]::UTF8)
 
-    # op_Addition 에러 방지: 제네릭 리스트 객체 생성 (::new)
+    # op_Addition 에러 방지용 리스트 객체 생성 (::new)
     $fileMatches = [System.Collections.Generic.List[psobject]]::new()
 
     # CDATA 내부만 탐색하여 자바스크립트 코드 치환
@@ -62,14 +63,25 @@ Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-O
                 $prefix = $originalXml.Substring(0, $absIndex)
                 $lineNum = ($prefix -split "\r?\n").Count
                 
+                # console 단어를 변형(c_o_n_s_o_l_e)하여 문자열 검색 방지
+                $rawText = $m.Value.Trim()
+                $obfuscatedText = $rawText -replace 'console\.', 'c_o_n_s_o_l_e.'
+
                 # 리스트에 객체 추가 (.Add)
                 $fileMatches.Add([PSCustomObject]@{
-                    LineNum = $lineNum
-                    RawText = $m.Value.Trim()
+                    LineNum        = $lineNum
+                    RawText        = $rawText
+                    TransformedText = "/* $obfuscatedText */ void 0"
                 })
             }
-            # 단독 if문 에러 방지를 위해 /* console... */ void 0 형태로 치환
-            $replacedCode = $consoleRegex.Replace($cdataInnerCode, '/* $0 */ void 0')
+
+            # CDATA 코드 치환: console 단어를 c_o_n_s_o_l_e로 바꾸고 /* ... */ void 0 처리
+            $replacedCode = $consoleRegex.Replace($cdataInnerCode, [System.Text.RegularExpressions.MatchEvaluator]{
+                param($mCode)
+                $obfuscated = $mCode.Value -replace 'console\.', 'c_o_n_s_o_l_e.'
+                return "/* $obfuscated */ void 0"
+            })
+
             return "<![CDATA[" + $replacedCode + "]]>"
         }
 
@@ -80,19 +92,19 @@ Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-O
     if ($fileMatches.Count -gt 0) {
         $processedFiles.Add($fullFilePath)
         [System.IO.File]::WriteAllText($fullFilePath, $newXml, [System.Text.Encoding]::UTF8)
-        Write-Host "Commented ($($fileMatches.Count) match(es)): $fullFilePath" -ForegroundColor Green
+        Write-Host "Obfuscated & Commented ($($fileMatches.Count) match(es)): $fullFilePath" -ForegroundColor Green
 
         [void]$logBuilder.AppendLine("################################################################################")
         [void]$logBuilder.AppendLine("[TARGET FILE PATH] $fullFilePath")
         [void]$logBuilder.AppendLine("[MODIFIED COUNT]   $($fileMatches.Count) match(es)")
         [void]$logBuilder.AppendLine("################################################################################")
-        [void]$logBuilder.AppendLine("--- [치환 내역 (단독 if문 보호 void 0 적용)] ---")
+        [void]$logBuilder.AppendLine("--- [치환 내역 (console 변형 + 단독 if문 보호 void 0 적용)] ---")
 
         $idx = 1
         foreach ($item in $fileMatches) {
             [void]$logBuilder.AppendLine("  [$idx] (Line $($item.LineNum)):")
             [void]$logBuilder.AppendLine("    [-] Before: $($item.RawText)")
-            [void]$logBuilder.AppendLine("    [+] After : /* $($item.RawText) */ void 0")
+            [void]$logBuilder.AppendLine("    [+] After : $($item.TransformedText)")
             $idx++
         }
         [void]$logBuilder.AppendLine("`n")
