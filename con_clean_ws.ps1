@@ -11,22 +11,22 @@ $excludeDirs = @(".git", "target", "build", "WEB-INF", ".settings")
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFilePath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path "websquare_console_log_$timestamp.txt"))
 
-# 1. CDATA 영역 감지 패턴: <![CDATA[ 와 ]]> 사이의 스크립트 블록 추출
+# 1. 정규표현식 객체 생성 (::new)
 $cdataPattern = '(?s)<!\[CDATA\[(.*?)\]\]>'
-$cdataRegex = New-Object System.Text.RegularExpressions.Regex($cdataPattern)
+$cdataRegex = [System.Text.RegularExpressions.Regex]::new($cdataPattern)
 
-# 2. Console 구문 감지 패턴 (이미 주석 처리된 구문 제외)
 $consolePattern = '(?<!\/\*.*)console\.(log|error|warn|info|debug|trace)\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)\s*;?'
-$consoleRegex = New-Object System.Text.RegularExpressions.Regex($consolePattern)
+$consoleRegex = [System.Text.RegularExpressions.Regex]::new($consolePattern)
 
-# 로그 버퍼 초기화
-$logBuilder = New-Object System.Text.StringBuilder
+# 로그 버퍼 초기화 (::new)
+$logBuilder = [System.Text.StringBuilder]::new()
 [void]$logBuilder.AppendLine("================================================================================")
 [void]$logBuilder.AppendLine(" [작업 시작] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
 [void]$logBuilder.AppendLine(" [대상 루트 경로] $([System.IO.Path]::GetFullPath($targetPath))")
 [void]$logBuilder.AppendLine("================================================================================`n")
 
-$processedFiles = @()
+# 작업 대상 목록 초기화 (::new)
+$processedFiles = [System.Collections.Generic.List[string]]::new()
 
 # XML 파일 순회
 Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-Object {
@@ -43,7 +43,8 @@ Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-O
     $fullFilePath = [System.IO.Path]::GetFullPath($_.FullName)
     $originalXml = [System.IO.File]::ReadAllText($fullFilePath, [System.Text.Encoding]::UTF8)
 
-    $fileMatches = @()
+    # op_Addition 에러 방지: 제네릭 리스트 객체 생성 (::new)
+    $fileMatches = [System.Collections.Generic.List[psobject]]::new()
 
     # CDATA 내부만 탐색하여 자바스크립트 코드 치환
     $newXml = $cdataRegex.Replace($originalXml, [System.Text.RegularExpressions.MatchEvaluator]{
@@ -56,15 +57,16 @@ Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-O
         $matchesInCdata = $consoleRegex.Matches($cdataInnerCode)
         if ($matchesInCdata.Count -gt 0) {
             foreach ($m in $matchesInCdata) {
-                # XML 전체 기준의 절대 위치를 계산하여 실제 라인 번호 산출
+                # XML 전체 기준 절대 위치를 계산하여 실제 라인 번호 산출
                 $absIndex = $cdataStartOffset + $m.Index
                 $prefix = $originalXml.Substring(0, $absIndex)
                 $lineNum = ($prefix -split "\r?\n").Count
                 
-                $fileMatches += [PSCustomObject]@{
+                # 리스트에 객체 추가 (.Add)
+                $fileMatches.Add([PSCustomObject]@{
                     LineNum = $lineNum
                     RawText = $m.Value.Trim()
-                }
+                })
             }
             # 단독 if문 에러 방지를 위해 /* console... */ void 0 형태로 치환
             $replacedCode = $consoleRegex.Replace($cdataInnerCode, '/* $0 */ void 0')
@@ -76,7 +78,7 @@ Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-O
 
     # 변경 사항이 있는 경우만 파일 쓰기 및 로깅
     if ($fileMatches.Count -gt 0) {
-        $processedFiles += $fullFilePath
+        $processedFiles.Add($fullFilePath)
         [System.IO.File]::WriteAllText($fullFilePath, $newXml, [System.Text.Encoding]::UTF8)
         Write-Host "Commented ($($fileMatches.Count) match(es)): $fullFilePath" -ForegroundColor Green
 
