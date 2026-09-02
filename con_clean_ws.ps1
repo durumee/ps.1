@@ -1,0 +1,115 @@
+# 탐색 대상 경로 (. 은 현재 실행 경로)
+$targetPath = "."
+
+# 웹스퀘어 화면 파일 확장자
+$includeFilter = @("*.xml")
+
+# 제외 디렉터리
+$excludeDirs = @(".git", "target", "build", "WEB-INF", ".settings")
+
+# 로그 파일 경로 설정
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$logFilePath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path "websquare_console_log_$timestamp.txt"))
+
+# 1. CDATA 영역 감지 패턴: <![CDATA[ 와 ]]> 사이의 스크립트 블록 추출
+$cdataPattern = '(?s)<!\[CDATA\[(.*?)\]\]>'
+$cdataRegex = New-Object System.Text.RegularExpressions.Regex($cdataPattern)
+
+# 2. Console 구문 감지 패턴 (이미 주석 처리된 구문 제외)
+$consolePattern = '(?<!\/\*.*)console\.(log|error|warn|info|debug|trace)\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)\s*;?'
+$consoleRegex = New-Object System.Text.RegularExpressions.Regex($consolePattern)
+
+# 로그 버퍼 초기화
+$logBuilder = New-Object System.Text.StringBuilder
+[void]$logBuilder.AppendLine("================================================================================")
+[void]$logBuilder.AppendLine(" [작업 시작] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+[void]$logBuilder.AppendLine(" [대상 루트 경로] $([System.IO.Path]::GetFullPath($targetPath))")
+[void]$logBuilder.AppendLine("================================================================================`n")
+
+$processedFiles = @()
+
+# XML 파일 순회
+Get-ChildItem -Path $targetPath -Include $includeFilter -Recurse -File | Where-Object {
+    $fullPath = $_.FullName
+    $skip = $false
+    foreach ($dir in $excludeDirs) {
+        if ($fullPath -match "[\\/]$dir[\\/]") {
+            $skip = $true
+            break
+        }
+    }
+    -not $skip
+} | ForEach-Object {
+    $fullFilePath = [System.IO.Path]::GetFullPath($_.FullName)
+    $originalXml = [System.IO.File]::ReadAllText($fullFilePath, [System.Text.Encoding]::UTF8)
+
+    $fileMatches = @()
+
+    # CDATA 내부만 탐색하여 자바스크립트 코드 치환
+    $newXml = $cdataRegex.Replace($originalXml, [System.Text.RegularExpressions.MatchEvaluator]{
+        param($cdataMatch)
+        
+        $cdataInnerCode = $cdataMatch.Groups[1].Value
+        $cdataStartOffset = $cdataMatch.Groups[1].Index
+
+        # CDATA 내부에서 console 구문 검출
+        $matchesInCdata = $consoleRegex.Matches($cdataInnerCode)
+        if ($matchesInCdata.Count -gt 0) {
+            foreach ($m in $matchesInCdata) {
+                # XML 전체 기준의 절대 위치를 계산하여 실제 라인 번호 산출
+                $absIndex = $cdataStartOffset + $m.Index
+                $prefix = $originalXml.Substring(0, $absIndex)
+                $lineNum = ($prefix -split "\r?\n").Count
+                
+                $fileMatches += [PSCustomObject]@{
+                    LineNum = $lineNum
+                    RawText = $m.Value.Trim()
+                }
+            }
+            # 단독 if문 에러 방지를 위해 /* console... */ void 0 형태로 치환
+            $replacedCode = $consoleRegex.Replace($cdataInnerCode, '/* $0 */ void 0')
+            return "<![CDATA[" + $replacedCode + "]]>"
+        }
+
+        return $cdataMatch.Value
+    })
+
+    # 변경 사항이 있는 경우만 파일 쓰기 및 로깅
+    if ($fileMatches.Count -gt 0) {
+        $processedFiles += $fullFilePath
+        [System.IO.File]::WriteAllText($fullFilePath, $newXml, [System.Text.Encoding]::UTF8)
+        Write-Host "Commented ($($fileMatches.Count) match(es)): $fullFilePath" -ForegroundColor Green
+
+        [void]$logBuilder.AppendLine("################################################################################")
+        [void]$logBuilder.AppendLine("[TARGET FILE PATH] $fullFilePath")
+        [void]$logBuilder.AppendLine("[MODIFIED COUNT]   $($fileMatches.Count) match(es)")
+        [void]$logBuilder.AppendLine("################################################################################")
+        [void]$logBuilder.AppendLine("--- [치환 내역 (단독 if문 보호 void 0 적용)] ---")
+
+        $idx = 1
+        foreach ($item in $fileMatches) {
+            [void]$logBuilder.AppendLine("  [$idx] (Line $($item.LineNum)):")
+            [void]$logBuilder.AppendLine("    [-] Before: $($item.RawText)")
+            [void]$logBuilder.AppendLine("    [+] After : /* $($item.RawText) */ void 0")
+            $idx++
+        }
+        [void]$logBuilder.AppendLine("`n")
+    }
+}
+
+# 작업 완료 요약 로깅
+[void]$logBuilder.AppendLine("================================================================================")
+[void]$logBuilder.AppendLine(" [작업 완료] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+[void]$logBuilder.AppendLine(" [총 수정된 파일 수] $($processedFiles.Count) 개")
+[void]$logBuilder.AppendLine("--------------------------------------------------------------------------------")
+[void]$logBuilder.AppendLine(" [수정된 파일 전체 경로 목록]")
+foreach ($path in $processedFiles) {
+    [void]$logBuilder.AppendLine("  * $path")
+}
+[void]$logBuilder.AppendLine("================================================================================")
+
+# 로그 파일 저장
+[System.IO.File]::WriteAllText($logFilePath, $logBuilder.ToString(), [System.Text.Encoding]::UTF8)
+
+Write-Host "`n작업 완료! 수정된 파일: $($processedFiles.Count) 개" -ForegroundColor Cyan
+Write-Host "로그 저장 경로: $logFilePath" -ForegroundColor Yellow
