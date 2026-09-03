@@ -4,6 +4,10 @@ if (-not $Dir) { $Dir = Read-Host "Target Directory Path" }
 $Dir = $Dir.Trim("`"' ")
 if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { Write-Host "Directory not found."; exit }
 
+# 현재 실행 디렉토리에 단일 통합 로그 파일 지정
+$TotalLog = Join-Path (Get-Location) "change_summary.log.txt"
+$AllLogs = @()
+
 $TblMap = @{
     "TB_CB01300M" = "TB_CB01000M /*비고객수정*/"
 }
@@ -13,14 +17,12 @@ function Rep-Col($col) {
     return ($col -replace "NCST_", "CUST_" -replace "_NCST_", "_CUST_")
 }
 
-# 디렉터리 내 xml 파일 순회
 Get-ChildItem -LiteralPath $Dir -Filter "*.xml" -File | ForEach-Object {
     $Path = $_.FullName
-    $Log = [System.IO.Path]::ChangeExtension($Path, ".log.txt")
-    
+    $FileName = $_.Name
     if ($_.IsReadOnly) { $_.IsReadOnly = $false }
     $Lines = Get-Content -LiteralPath $Path -Encoding UTF8
-    $Out = @(); $Logs = @(); $InWhere = $false
+    $Out = @(); $FileLogs = @(); $InWhere = $false
 
     for ($i = 0; $i -lt $Lines.Count; $i++) {
         $Orig = $Lines[$i]
@@ -59,18 +61,28 @@ Get-ChildItem -LiteralPath $Dir -Filter "*.xml" -File | ForEach-Object {
             }
         }
 
+        # 변경 이력 기록 (파일명, 라인번호, 전/후 내용)
         if ($Orig -ne $Line) {
-            $Logs += "Line $($i + 1):"
-            $Logs += "  [-] $Orig"
-            $Logs += "  [+] $Line"
+            $FileLogs += "[$FileName] Line $($i + 1):"
+            $FileLogs += "  [-] $Orig"
+            $FileLogs += "  [+] $Line"
         }
         $Out += $Line
     }
 
-    Set-Content -LiteralPath $Path -Value $Out -Encoding UTF8
-    if ($Logs.Count -gt 0) {
-        Set-Content -LiteralPath $Log -Value $Logs -Encoding UTF8
-        Write-Host "Modified: $($_.Name) -> $Log"
+    # 변경사항이 발생한 파일만 저장 및 통합 로그에 추가
+    if ($FileLogs.Count -gt 0) {
+        Set-Content -LiteralPath $Path -Value $Out -Encoding UTF8
+        $AllLogs += $FileLogs
+        $AllLogs += ""
+        Write-Host "Updated: $FileName"
     }
 }
-Write-Host "All files processed."
+
+# 단일 통합 로그 파일 저장
+if ($AllLogs.Count -gt 0) {
+    Set-Content -LiteralPath $TotalLog -Value $AllLogs -Encoding UTF8
+    Write-Host "Log saved to: $TotalLog"
+} else {
+    Write-Host "No changes detected across all files."
+}
