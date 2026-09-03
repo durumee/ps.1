@@ -4,7 +4,6 @@ if (-not $Dir) { $Dir = Read-Host "Target Directory Path" }
 $Dir = $Dir.Trim("`"' ")
 if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { Write-Host "Directory not found."; exit }
 
-# 현재 실행 디렉토리에 단일 통합 로그 파일 지정
 $TotalLog = Join-Path (Get-Location) "change_summary.log.txt"
 $AllLogs = @()
 
@@ -46,7 +45,7 @@ Get-ChildItem -LiteralPath $Dir -Filter "*.xml" -File | ForEach-Object {
                     param($m) Rep-Col $m.Value
                 })
             } else {
-                $Line = [System.Text.RegularExpressions.Regex]::Replace($Line, "(\b[A-Za-z0-9_]*NCST_[A-Za-z0-9_]+\b)(\s+(?i:AS\s+)?[A-Za-z0-9_]+)?", {
+                $Line = [System.Text.RegularExpressions.Regex]::Replace($Line, "(\b[A-Za-z0-9_]*NCST_[A-Za-z0-9_]+)\b)(\s+(?i:AS\s+)?[A-Za-z0-9_]+)?", {
                     param($m)
                     $col = $m.Groups[1].Value
                     $alias = $m.Groups[2].Value
@@ -61,25 +60,25 @@ Get-ChildItem -LiteralPath $Dir -Filter "*.xml" -File | ForEach-Object {
             }
         }
 
-        # 변경 이력 기록 (파일명, 라인번호, 전/후 내용)
+        # 라인 단위 변경 기록 (파일명 제외하고 라인 번호만)
         if ($Orig -ne $Line) {
-            $FileLogs += "[$FileName] Line $($i + 1):"
-            $FileLogs += "  [-] $Orig"
-            $FileLogs += "  [+] $Line"
+            $FileLogs += "  Line $($i + 1):"
+            $FileLogs += "    [-] $Orig"
+            $FileLogs += "    [+] $Line"
         }
         $Out += $Line
     }
 
-    # 변경사항이 발생한 파일만 저장 및 통합 로그에 추가
+    # 파일명은 헤더로 상단에 1회만 추가
     if ($FileLogs.Count -gt 0) {
         Set-Content -LiteralPath $Path -Value $Out -Encoding UTF8
+        $AllLogs += "[$FileName]"
         $AllLogs += $FileLogs
         $AllLogs += ""
         Write-Host "Updated: $FileName"
     }
 }
 
-# 단일 통합 로그 파일 저장
 if ($AllLogs.Count -gt 0) {
     Set-Content -LiteralPath $TotalLog -Value $AllLogs -Encoding UTF8
     Write-Host "Log saved to: $TotalLog"
